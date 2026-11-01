@@ -4199,6 +4199,39 @@ fn a_height_for_every_row_sets_the_default_row_height() {
     assert!(sh.is_row_hidden(0) && sh.is_row_hidden(gridcraft_core::MAX_ROWS - 1));
 }
 
+/// #2762, after the default height changes: a row given its own height keeps it, rows inserted
+/// later take the new default, and the file carries `defaultRowHeight` with `customHeight="1"`.
+#[test]
+fn rows_after_a_default_row_height_change() {
+    let sheet = |s: &Session| s.doc().unwrap().wb.active().unwrap().clone();
+    let mut s = s();
+    s.execute("cell.set", json!({"cell": "A3", "input": "x"})).unwrap();
+    s.execute("home.rowHeight", json!({"rows": "1:1048576", "height": 40})).unwrap();
+    s.execute("home.rowHeight", json!({"rows": "5:5", "height": 24})).unwrap();
+    let sh = sheet(&s);
+    assert_eq!((sh.row_height(4), sh.row_height(3), sh.row_height(5)), (24.0, 40.0, 40.0));
+
+    // Two rows inserted above: they take the default, and the rows below move down with their heights.
+    s.execute("home.insertRows", json!({"rows": "1:2"})).unwrap();
+    let sh = sheet(&s);
+    assert_eq!((sh.row_height(0), sh.row_height(1)), (40.0, 40.0));
+    assert_eq!((sh.row_height(6), sh.row_height(4)), (24.0, 40.0));
+    assert!(sh.rows.len() < 10, "{} rows listed", sh.rows.len());
+
+    // 40 px is 30 pt. The row with its own height is written; the empty rows that only follow
+    // the default are not.
+    let bytes = gridcraft_xlsx::write_xlsx(&s.doc().unwrap().wb).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("xl/worksheets/sheet1.xml").unwrap(), &mut xml).unwrap();
+    assert!(xml.contains(r#"defaultRowHeight="30" customHeight="1""#), "{xml}");
+    assert!(xml.contains(r#"<row r="7" ht="18" customHeight="1""#), "{xml}");
+    assert!(xml.matches("<row ").count() < 10, "{xml}");
+    let (back, _) = gridcraft_xlsx::read_xlsx(&bytes).unwrap();
+    let sh = &back.sheets[0];
+    assert_eq!((sh.default_row_height, sh.row_height(6), sh.row_height(100_000)), (40.0, 24.0, 40.0));
+}
+
 #[test]
 fn row_height_and_column_width_take_a_list_of_areas() {
     // Issue #341: header drags on a multi-area selection size every selected line in one step.
